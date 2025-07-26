@@ -2,14 +2,20 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-import torch.multiprocessing as mp
 import torchvision
 import torchvision.transforms as transforms
+import os
 
 SYNC_INTERVAL = 5
 
 def setup():
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    
     dist.init_process_group(backend="nccl")
+    
+    return rank, world_size, local_rank
 
 def cleanup():
     dist.destroy_process_group()
@@ -20,16 +26,19 @@ def average_model(model):
             dist.all_reduce(param.data, op=dist.ReduceOp.SUM)
             param.data /= dist.get_world_size()
 
-def train(rank, world_size):
-    torch.cuda.set_device(rank)
-    setup()
+def train():
+    # Setup distributed training
+    rank, world_size, local_rank = setup()
+    
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
 
     model = nn.Sequential(
         nn.Flatten(),
         nn.Linear(28*28, 128),
         nn.ReLU(),
         nn.Linear(128, 10)
-    ).cuda(rank)
+    ).cuda(local_rank)
 
     optimizer = optim.SGD(model.parameters(), lr=0.1)
     loss_fn = nn.CrossEntropyLoss()
@@ -41,8 +50,9 @@ def train(rank, world_size):
 
     model.train()
     for epoch in range(5):
+        sampler.set_epoch(epoch)
         for i, (x, y) in enumerate(loader):
-            x, y = x.cuda(rank), y.cuda(rank)
+            x, y = x.cuda(local_rank), y.cuda(local_rank)
             pred = model(x)
             loss = loss_fn(pred, y)
 
@@ -60,5 +70,4 @@ def train(rank, world_size):
     cleanup()
 
 if __name__ == "__main__":
-    world_size = torch.cuda.device_count()
-    mp.spawn(train, args=(world_size,), nprocs=world_size)
+    train()
