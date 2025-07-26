@@ -13,4 +13,4 @@ torchrun \
     --node_rank=0 \
     --master_addr=localhost \
     --master_port=29500 \
-    main_ddp.py
+    src/main_ddp.py
