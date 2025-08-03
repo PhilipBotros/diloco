@@ -4,57 +4,17 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from threading import Lock
 from torch.distributed.rpc import (
     init_rpc,
     shutdown,
     remote
 )
+from src.model import create_model
+from src.parameter_server import ParameterServerSync
 
 INNER_STEPS = 10
 BATCH_SIZE = 64
 NUM_EPOCHS = 10
-
-def create_model():
-    return nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(28 * 28, 128),
-        nn.ReLU(),
-        nn.Linear(128, 10)
-    )
-
-class ParameterServer:
-    def __init__(self):
-        self.lock = Lock()
-        self.global_model = create_model().cpu()
-        self.outer_optimizer = optim.SGD(
-            self.global_model.parameters(),
-            lr=0.01, momentum=0.9, nesterov=True
-        )
-        self.delta_buffer = []
-        self.world_size = int(os.environ.get("WORLD_SIZE", 3)) - 1  # exclude server
-
-    def push_deltas(self, deltas):
-        with self.lock:
-            self.delta_buffer.append(deltas)
-            if len(self.delta_buffer) == self.world_size:
-                self._apply_outer_step()
-                self.delta_buffer = []
-
-    def pull_global_model(self):
-        with self.lock:
-            return self.global_model.state_dict()
-
-    def _apply_outer_step(self):
-        avg_deltas = {}
-        for k in self.delta_buffer[0].keys():
-            avg_deltas[k] = sum([deltas[k] for deltas in self.delta_buffer]) / self.world_size
-        
-        for param_name, param in self.global_model.named_parameters():
-            param.grad = avg_deltas[param_name]
-        
-        self.outer_optimizer.step()
-        self.outer_optimizer.zero_grad()
 
 def run_worker(rank, ps_rref):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -113,12 +73,12 @@ def run_worker(rank, ps_rref):
 def run(rank, world_size):
     if rank == 0:
         init_rpc("ps", rank=rank, world_size=world_size)
-        ps = ParameterServer()
+        ps = ParameterServerSync(create_model())
         print("Parameter server initialized with DiLoCo algorithm.")
         shutdown()
     else:
         init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
-        ps_rref = remote("ps", ParameterServer)
+        ps_rref = remote("ps", ParameterServerSync)
         run_worker(rank, ps_rref)
         shutdown()
 

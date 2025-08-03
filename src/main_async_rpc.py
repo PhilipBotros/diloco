@@ -4,14 +4,14 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from threading import Lock, Condition
+import time
 from torch.distributed.rpc import (
     init_rpc,
     shutdown,
     remote
 )
-import torch.distributed as dist
-import time
+from src.model import create_model
+from src.parameter_server import ParameterServerAsync
 
 BATCH_SIZE = 64
 NUM_EPOCHS = 10
@@ -19,66 +19,6 @@ INPUT_SIZE = 28 * 28
 HIDDEN_SIZE = 128
 OUTPUT_SIZE = 10
 NUM_INNER_STEPS = 10
-
-def create_model():
-    return nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(INPUT_SIZE, HIDDEN_SIZE),
-        nn.ReLU(),
-        nn.Linear(HIDDEN_SIZE, OUTPUT_SIZE)
-    )
-
-class ParameterServer:
-    def __init__(self, grace_period=10):
-        self.lock = Lock()
-        self.cv = Condition(self.lock)
-        self.global_model = create_model().cpu()
-        self.outer_optimizer = optim.SGD(
-            self.global_model.parameters(),
-            lr=0.01, momentum=0.9, nesterov=True
-        )
-        self.delta_buffer = []
-        self.inference_times = []
-        self.max_inference_time = 0.0
-        self.world_size = int(os.environ.get("WORLD_SIZE", 3)) - 1  # exclude server
-        self.grace_period = grace_period
-        self.last_update = time.time()
-
-    def push_inference_time(self, inference_time):
-        with self.cv:
-            self.inference_times.append(inference_time)
-            if len(self.inference_times) == self.world_size:
-                self.max_inference_time = max(self.inference_times)
-                self.cv.notify_all() 
-    
-    def pull_max_inference_time(self):
-        with self.cv:
-            while len(self.inference_times) < self.world_size:
-                self.cv.wait()  # Wait until all inference times are pushed
-            return self.max_inference_time
-
-    def push_deltas(self, deltas):
-        with self.lock:
-            self.delta_buffer.append(deltas)
-            if len(self.delta_buffer) == self.world_size or time.time() - self.last_update > self.grace_period:
-                self._apply_outer_step()
-                self.last_update = time.time()
-
-    def pull_global_model(self):
-        with self.lock:
-            return self.global_model.state_dict()
-
-    def _apply_outer_step(self):
-        avg_deltas = {}
-        for k in self.delta_buffer[0].keys():
-            avg_deltas[k] = sum([deltas[k] for deltas in self.delta_buffer]) / self.world_size
-        
-        for param_name, param in self.global_model.named_parameters():
-            param.grad = avg_deltas[param_name]
-        
-        self.outer_optimizer.step()
-        self.outer_optimizer.zero_grad()
-        self.delta_buffer = []
 
 def run_worker(rank, ps_rref):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -162,12 +102,12 @@ def run_worker(rank, ps_rref):
 def run(rank, world_size):
     if rank == 0:
         init_rpc("ps", rank=rank, world_size=world_size)
-        ps = ParameterServer()
+        ps = ParameterServerAsync(create_model())
         print("Parameter server initialized with DiLoCo algorithm.")
         shutdown()
     else:
         init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
-        ps_rref = remote("ps", ParameterServer)
+        ps_rref = remote("ps", ParameterServerAsync)
         run_worker(rank, ps_rref)
         shutdown()
 

@@ -5,6 +5,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import os
+from src.model import create_model
 
 INNER_STEPS = 10    
 BATCH_SIZE = 64
@@ -28,13 +29,6 @@ def average_gradients(model):
             dist.all_reduce(param.data, op=dist.ReduceOp.SUM)
             param.data /= dist.get_world_size()
 
-def setup_model():
-    return nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(28*28, 128),
-        nn.ReLU(),
-        nn.Linear(128, 10)
-    )
 
 def outer_step(global_model, local_model, outer_optimizer):
     """Compute deltas from local to global, average them, apply outer optimizer to global model."""
@@ -68,8 +62,8 @@ def train():
     # Set the device for this process
     torch.cuda.set_device(local_rank)
 
-    global_model = setup_model().cuda(local_rank)
-    local_model = setup_model().cuda(local_rank)
+    global_model = create_model().cuda(local_rank)
+    local_model = create_model().cuda(local_rank)
 
     inner_optimizer = optim.AdamW(local_model.parameters(), lr=0.001)
     outer_optimizer = optim.SGD(global_model.parameters(), lr=0.01, momentum=0.9, nesterov=True)
