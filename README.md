@@ -50,5 +50,8 @@ The implementation uses a two-level optimization strategy:
 2. **Outer Loop**: Workers communicate parameter deltas and apply averaged updates
 
 ## Todo
-- [ ] [Async DiLoCo](https://arxiv.org/abs/2401.09135)
+- [ x ] [Async DiLoCo](https://arxiv.org/abs/2401.09135)
 - [ ] [SWARM](https://arxiv.org/abs/2301.11913)
+- [ ] Support generic remote parameter servers and connect based on run ID
+- [ ] Can we filter out bad actors during training?
+- [ ] Basic interface to display the current connected nodes for a particular run
