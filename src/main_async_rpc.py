@@ -5,28 +5,20 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import time
-from torch.distributed.rpc import (
-    init_rpc,
-    shutdown,
-    remote
-)
+from torch.distributed.rpc import shutdown
 from src.model import create_model
-from src.parameter_server import ParameterServerAsync
+from src.utils import init_parameter_server, init_worker
+from src.config import load_training_params
 
-BATCH_SIZE = 64
-NUM_EPOCHS = 10
-INPUT_SIZE = 28 * 28  
-HIDDEN_SIZE = 128
-OUTPUT_SIZE = 10
-NUM_INNER_STEPS = 10
-
-def run_worker(rank, ps_rref):
+def run_worker(rank, worker_config):
+    training_params = load_training_params()
+    ps_rref = worker_config.ps_rref
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     global_model = create_model().to(device)
     local_model = create_model().to(device)
     
-    inner_optimizer = optim.AdamW(local_model.parameters(), lr=0.001)
+    inner_optimizer = optim.AdamW(local_model.parameters(), lr=worker_config.learning_rate)
     loss_fn = nn.CrossEntropyLoss()
 
     transform = transforms.ToTensor()
@@ -37,7 +29,7 @@ def run_worker(rank, ps_rref):
     indices = torch.randperm(len(dataset))
     worker_indices = indices[rank-1::world_size]
     sampler = torch.utils.data.SubsetRandomSampler(worker_indices)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=training_params.batch_size, sampler=sampler)
 
     global_model.train()
     local_model.train()
@@ -47,7 +39,7 @@ def run_worker(rank, ps_rref):
         """ Wall time is the time to process one inner step,
             we calculate the inner steps of this process such that it's bounded by wall_time """
         inference_time = 0
-        x = torch.randn(BATCH_SIZE, INPUT_SIZE).to(device)
+        x = torch.randn(training_params.batch_size, training_params.input_size).to(device)
         for _ in range(num_steps_inference):
             start_time = time.time()
             _ = model(x)
@@ -65,9 +57,9 @@ def run_worker(rank, ps_rref):
     max_inference_time = ps_rref.rpc_sync().pull_max_inference_time()
     
     # Recalculate inner steps using the max inference time
-    inner_steps_process = int(local_avg_inference_time / max_inference_time) * NUM_INNER_STEPS
+    inner_steps_process = int(local_avg_inference_time / max_inference_time) * training_params.local_updates
     
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(training_params.num_epochs):
         for i, (x, y) in enumerate(loader):
             x, y = x.to(device), y.to(device)
 
@@ -101,14 +93,12 @@ def run_worker(rank, ps_rref):
 
 def run(rank, world_size):
     if rank == 0:
-        init_rpc("ps", rank=rank, world_size=world_size)
-        ps = ParameterServerAsync(create_model())
+        init_parameter_server(world_size)
         print("Parameter server initialized with DiLoCo algorithm.")
         shutdown()
     else:
-        init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
-        ps_rref = remote("ps", ParameterServerAsync)
-        run_worker(rank, ps_rref)
+        worker_config = init_worker(rank, world_size)
+        run_worker(rank, worker_config)
         shutdown()
 
 if __name__ == "__main__":
