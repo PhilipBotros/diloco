@@ -2,9 +2,15 @@ import os
 import torch.optim as optim
 import time
 from threading import Lock, Condition
+from src.config import TrainingParams
 
 class ParameterServerAsync:
-    def __init__(self, model,grace_period=10, num_sgd_steps=10, sgd_momentum=0.9, nesterov_momentum=0.9, learning_rate=0.01):
+    def __init__(self, model, training_params: TrainingParams = None):
+        if training_params is None:
+            from src.config import load_training_params
+            training_params = load_training_params()
+            
+        self.initialized = False
         self.lock_inference = Lock()
         self.cv_inference = Condition(self.lock_inference)
         self.lock_grace_period = Lock()
@@ -12,18 +18,38 @@ class ParameterServerAsync:
         self.global_model = model.cpu()
         self.outer_optimizer = optim.SGD(
             self.global_model.parameters(),
-            lr=0.01, momentum=nesterov_momentum, nesterov=True
+            lr=training_params.learning_rate, 
+            momentum=training_params.tau, 
+            nesterov=True
         )
         self.delta_buffer = []
         self.inference_times = []
         self.max_inference_time = 0.0
         self.world_size = int(os.environ.get("WORLD_SIZE", 3)) - 1  # exclude server
-        self.grace_period = grace_period
+        self.grace_period = training_params.grace_period
         self.last_update = time.time()
-        self.num_sgd_steps = num_sgd_steps
-        self.sgd_momentum = sgd_momentum
-        self.learning_rate = learning_rate
+        self.num_sgd_steps = training_params.local_updates
+        self.sgd_momentum = training_params.momentum
+        self.learning_rate = training_params.learning_rate
         self.step = 0
+        self.training_params = training_params
+        self.set_initialized()
+
+    def set_initialized(self):
+        self.initialized = True
+
+    def is_initialized(self):
+        return self.initialized
+    
+    def is_worker_setup_correct(self, model, params):
+        # TODO: We now run this check when connecting to the parameter server 
+        # but there are no explicit checks during training
+        if hash(self.global_model) != hash(model):
+            raise RuntimeError("Model mismatch")
+        
+        if self.training_params != params:
+            raise RuntimeError("Training parameters mismatch")
+        return True
 
     def push_inference_time(self, inference_time):
         with self.cv_inference:
@@ -74,7 +100,7 @@ class ParameterServerAsync:
         else:
             local_pseudograd = self.delta_buffer[-1]
             for param_name, param in self.global_model.named_parameters():
-                param -= self.learning_rate * local_pseudograd[param_name]
+                param.data -= self.learning_rate * local_pseudograd[param_name]
 
         self.step += 1
 
