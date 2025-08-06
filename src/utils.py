@@ -46,18 +46,18 @@ def init_worker(rank, world_size):
     """
     training_params = load_training_params()
     init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
+    # TODO: Run this server side instead in one single RPC call
     ps_rref = connect_to_parameter_server(rank)
     if not ps_rref.rpc_sync().is_initialized():
         raise RuntimeError("Parameter server is not initialized")
     if not ps_rref.rpc_sync().is_worker_setup_correct(create_model(), training_params):
         raise RuntimeError("This worker is not setup correctly")
-    
-    shard_id = rank - 1
-    learning_rate = training_params.learning_rate
+    shard_id = ps_rref.rpc_sync().assign_shard()
+    learning_rate = ps_rref.rpc_sync().calculate_learning_rate(shard_id)
     config = WorkerConfig(ps_rref, shard_id, learning_rate)
     return config
 
-def compute_model_hash(model, include_buffers=True):
+def compute_model_hash(model):
     hasher = hashlib.sha256()
     with torch.no_grad():
         state_dict = model.state_dict()  # includes both params and buffers

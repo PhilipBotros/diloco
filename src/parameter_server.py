@@ -97,6 +97,10 @@ class ParameterServerAsync:
         # Sample a shard based on the inverse training progress
         # Simpler than the paper for now as our data shards are the same size
         return np.random.choice(self.num_shards, p=self.shard_weights)
+    
+    def calculate_learning_rate(self, shard_id):    
+        # TODO: Implement this
+        return 0.01
 
     def _apply_outer_step(self):
         avg_deltas = {}
