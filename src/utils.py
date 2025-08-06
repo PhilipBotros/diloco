@@ -6,6 +6,8 @@ from src.parameter_server import ParameterServerAsync
 from src.model import create_model
 from src.config import load_training_params
 import time
+import hashlib
+import torch
 
 @dataclass
 class WorkerConfig:
@@ -54,3 +56,13 @@ def init_worker(rank, world_size):
     learning_rate = training_params.learning_rate
     config = WorkerConfig(ps_rref, shard_id, learning_rate)
     return config
+
+def compute_model_hash(model, include_buffers=True):
+    hasher = hashlib.sha256()
+    with torch.no_grad():
+        state_dict = model.state_dict()  # includes both params and buffers
+        for name, tensor in state_dict.items():
+            hasher.update(name.encode('utf-8'))
+            hasher.update(tensor.detach().cpu().view(torch.uint8).numpy().tobytes())
+    
+    return hasher.hexdigest()

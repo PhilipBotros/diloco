@@ -3,6 +3,7 @@ import torch.optim as optim
 import time
 from threading import Lock, Condition
 from src.config import TrainingParams
+from src.utils import compute_model_hash
 
 class ParameterServerAsync:
     def __init__(self, model, training_params: TrainingParams = None):
@@ -44,7 +45,7 @@ class ParameterServerAsync:
     def is_worker_setup_correct(self, model, params):
         # TODO: We now run this check when connecting to the parameter server 
         # but there are no explicit checks during training
-        if hash(self.global_model) != hash(model):
+        if compute_model_hash(self.global_model) != compute_model_hash(model):
             raise RuntimeError("Model mismatch")
         
         if self.training_params != params:
