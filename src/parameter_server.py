@@ -4,6 +4,7 @@ import time
 from threading import Lock, Condition
 from src.config import TrainingParams
 from src.utils import compute_model_hash
+import numpy as np
 
 class ParameterServerAsync:
     def __init__(self, model, training_params: TrainingParams = None):
@@ -27,6 +28,8 @@ class ParameterServerAsync:
         self.inference_times = []
         self.max_inference_time = 0.0
         self.world_size = int(os.environ.get("WORLD_SIZE", 3)) - 1  # exclude server
+        self.num_shards = self.world_size # TODO: Make this configurable
+        self.update_steps_per_shard = np.zeros(self.num_shards, dtype=np.int32)
         self.grace_period = training_params.grace_period
         self.last_update = time.time()
         self.num_sgd_steps = training_params.local_updates
@@ -68,10 +71,11 @@ class ParameterServerAsync:
     def is_grace_period_over(self):
         return time.time() - self.last_update > self.grace_period
 
-    def push_deltas(self, deltas):
+    def push_deltas(self, deltas, node_id, shard_id):
         with self.lock_grace_period:
             self.delta_buffer.append(deltas)
             self._apply_outer_step()
+            self.update_steps_per_shard[shard_id] += 1
             if self.is_grace_period_over():
                 self.last_update = time.time()
                 # Notify any waiting threads
@@ -83,6 +87,16 @@ class ParameterServerAsync:
             while not self.is_grace_period_over():
                 self.cv_grace_period.wait()
             return self.global_model.state_dict()
+        
+    @property
+    def shard_weights(self):
+        weights = 1.0 / (self.update_steps_per_shard + 1.0)  
+        return weights / weights.sum() 
+        
+    def assign_shard(self):
+        # Sample a shard based on the inverse training progress
+        # Simpler than the paper for now as our data shards are the same size
+        return np.random.choice(self.num_shards, p=self.shard_weights)
 
     def _apply_outer_step(self):
         avg_deltas = {}
