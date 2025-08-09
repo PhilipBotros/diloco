@@ -27,6 +27,12 @@ class TrainingParams:
     optimizer: str = "sgd"
     scheduler: Optional[str] = None
     gradient_clipping: Optional[float] = None
+    
+    # Scheduler parameters
+    warmup_steps: int = 100
+    max_steps: int = 10000
+    eta_max: float = 3e-4
+    eta_min: float = 1e-6
 
 def load_training_params() -> TrainingParams:
     """Load training parameters. Can be extended to load from file or environment."""

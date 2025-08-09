@@ -2,14 +2,14 @@ import os
 import torch.optim as optim
 import time
 from threading import Lock, Condition
-from src.config import TrainingParams
+from src.config import load_training_params
 from src.utils import compute_model_hash
 import numpy as np
+from src.optimiser import lr_cosine_with_warmup
 
 class ParameterServerAsync:
-    def __init__(self, model, training_params: TrainingParams = None):
-        if training_params is None:
-            from src.config import load_training_params
+    def __init__(self, model, training_params = None):
+        if not training_params:
             training_params = load_training_params()
             
         self.initialized = False
@@ -37,6 +37,12 @@ class ParameterServerAsync:
         self.learning_rate = training_params.learning_rate
         self.step = 0
         self.training_params = training_params
+        self.scheduler_params = {
+            't_warmup': training_params.warmup_steps,
+            'T': training_params.max_steps,
+            'eta_max': training_params.eta_max,
+            'eta_min': training_params.eta_min
+        }
         self.set_initialized()
 
     def set_initialized(self):
@@ -98,9 +104,19 @@ class ParameterServerAsync:
         # Simpler than the paper for now as our data shards are the same size
         return np.random.choice(self.num_shards, p=self.shard_weights)
     
-    def calculate_learning_rate(self, shard_id):    
-        # TODO: Implement this
-        return 0.01
+    def calculate_learning_rate(self, shard_id):
+        if shard_id not in self.update_steps_per_shard:
+            raise ValueError(f"Invalid shard_id: {shard_id}")
+        
+        # Use the actual training progress (update steps) for this shard
+        current_steps = self.update_steps_per_shard[shard_id]
+        return lr_cosine_with_warmup(
+            current_steps, 
+            self.scheduler_params['t_warmup'], 
+            self.scheduler_params['T'], 
+            self.scheduler_params['eta_max'], 
+            self.scheduler_params['eta_min']
+            )
 
     def _apply_outer_step(self):
         avg_deltas = {}

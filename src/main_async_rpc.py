@@ -63,10 +63,15 @@ def run_worker(rank, worker_config):
         for i, (x, y) in enumerate(loader):
             x, y = x.to(device), y.to(device)
 
-            # Step 1: sync local model with current global state
+            # Step 1: sync local model with current global state and get updated learning rate
             global_state = ps_rref.rpc_sync().pull_global_model()
             global_model.load_state_dict(global_state)
             local_model.load_state_dict(global_state)
+            
+            # Update learning rate for this worker's shard
+            current_lr = ps_rref.rpc_sync().calculate_learning_rate(worker_config.shard_id)
+            for param_group in inner_optimizer.param_groups:
+                param_group['lr'] = current_lr
 
             # Step 2: inner training loop
             for _ in range(inner_steps_process):
@@ -86,7 +91,7 @@ def run_worker(rank, worker_config):
             # Send deltas to parameter server
             # Move tensors to CPU before sending to parameter server
             deltas = {k: v.cpu() for k, v in deltas.items()}
-            ps_rref.rpc_sync().push_deltas(deltas)
+            ps_rref.rpc_sync().push_deltas(deltas, rank, worker_config.shard_id)
 
             if rank == 1 and (i + 1) % 100 == 0:
                 print(f"[Epoch {epoch}] Step {i+1}, Loss: {loss.item():.4f}")
